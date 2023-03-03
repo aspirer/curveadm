@@ -20,6 +20,8 @@
  * Author: Jingli Chen (Wine93)
  */
 
+// __SIGN_BY_WINE93__
+
 package utils
 
 import (
@@ -28,22 +30,40 @@ import (
 
 type SafeMap struct {
 	sync.RWMutex
-	Map map[string]interface{}
+	Map         map[string]interface{}
+	transaction bool
 }
 
 func NewSafeMap() *SafeMap {
 	return &SafeMap{Map: map[string]interface{}{}}
 }
 
-func (m *SafeMap) Get(key string) (interface{}, bool) {
+func (m *SafeMap) Get(key string) interface{} {
+	if m.transaction {
+		val, _ := m.Map[key]
+		return val
+	}
 	m.RLock()
 	defer m.RUnlock()
-	val, ok := m.Map[key]
-	return val, ok
+	val, _ := m.Map[key]
+	return val
 }
 
 func (m *SafeMap) Set(key string, value interface{}) {
+	if m.transaction {
+		m.Map[key] = value
+		return
+	}
 	m.Lock()
 	defer m.Unlock()
 	m.Map[key] = value
+}
+
+func (m *SafeMap) TX(callback func(m *SafeMap) error) error {
+	m.Lock()
+	m.transaction = true
+	err := callback(m)
+	m.transaction = false
+	m.Unlock()
+	return err
 }

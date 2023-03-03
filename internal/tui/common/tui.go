@@ -20,6 +20,8 @@
  * Author: Jingli Chen (Wine93)
  */
 
+// __SIGN_BY_WINE93__
+
 package common
 
 import (
@@ -84,6 +86,10 @@ func FixedFormat(lines [][]interface{}, nspace int) string {
 	for i := 0; i < n; i++ {
 		first := true
 		for j := 0; j < m; j++ {
+			if fixed[j] == 0 { // maybe cutted
+				continue
+			}
+
 			if !first {
 				output += spacing
 			} else {
@@ -109,12 +115,32 @@ func FormatTitle(title []string) ([]interface{}, []interface{}) {
 	return first, second
 }
 
+func CutColumn(lines [][]interface{}, column int) {
+	for _, line := range lines {
+		line[column] = ""
+	}
+}
+
 func TrimContainerId(containerId string) string {
 	containerId = strings.TrimRight(containerId, "\r\n")
 	if len(containerId) <= 12 {
 		return containerId
 	}
 	return containerId[:12]
+}
+
+func TrimPluginDescription(decscription string) string {
+	if len(decscription) > 50 {
+		return decscription[:47] + "..."
+	}
+	return decscription
+}
+
+func TrimAddress(address string) string {
+	if len(address) > 30 {
+		return address[:30] + "..."
+	}
+	return address
 }
 
 func prompt(prompt string) string {
@@ -131,20 +157,10 @@ func prompt(prompt string) string {
 	return strings.TrimSuffix(input, "\n")
 }
 
-func ConfirmNo(format string, a ...interface{}) bool {
-	ans := prompt(fmt.Sprintf(format, a...) + "(default=Y)")
-	switch strings.TrimSpace(strings.ToLower(ans)) {
-	case "n", "no":
-		return true
-	default:
-		return false
-	}
-}
-
 func ConfirmYes(format string, a ...interface{}) bool {
-	ans := prompt(fmt.Sprintf(format, a...) + "(default=N)")
-	switch strings.TrimSpace(strings.ToLower(ans)) {
-	case "y", "yes":
+	ans := prompt(fmt.Sprintf(format, a...) + " [yes/no]: (default=no)")
+	switch strings.TrimSpace(ans) {
+	case "yes":
 		return true
 	default:
 		return false

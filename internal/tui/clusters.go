@@ -20,6 +20,8 @@
  * Author: Jingli Chen (Wine93)
  */
 
+// __SIGN_BY_WINE93__
+
 package tui
 
 import (
@@ -35,10 +37,10 @@ func currentDecorate(message string) string {
 	return color.GreenString(message)
 }
 
-func FormatClusters(clusters []storage.Cluster, vebose bool) string {
+func FormatClusters(clusters []storage.Cluster, verbose bool) string {
 	lines := [][]interface{}{}
-	if vebose {
-		title := []string{" ", "Cluster", "Id", "Create Time", "Description"}
+	if verbose {
+		title := []string{" ", "Cluster", "Id", "UUId", "Create Time", "Description"}
 		first, second := tuicommon.FormatTitle(title)
 		second[0] = ""
 		lines = append(lines, first)
@@ -56,8 +58,9 @@ func FormatClusters(clusters []storage.Cluster, vebose bool) string {
 			line = append(line, cluster.Name)
 		}
 
-		if vebose {
+		if verbose {
 			line = append(line, strconv.Itoa(cluster.Id))
+			line = append(line, cluster.UUId)
 			line = append(line, cluster.CreateTime.Format("2006-01-02 15:04:05"))
 			line = append(line, cluster.Description)
 		}
@@ -66,7 +69,7 @@ func FormatClusters(clusters []storage.Cluster, vebose bool) string {
 	}
 
 	nspace := 1
-	if vebose {
+	if verbose {
 		nspace = 2
 	}
 	output := common.FixedFormat(lines, nspace)

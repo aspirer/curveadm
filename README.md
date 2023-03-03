@@ -1,96 +1,35 @@
-# CurveAdm
-
-Deploy and manage Curve cluster
-
-> NOTE: CurveAdm only support [CurveFS](https://github.com/opencurve/curve/tree/fs) now, the [CurveBS](https://github.com/opencurve/curve) will be supported later
-
-Table of Contents
-===
-
-* [Requirement](#requirement)
-* [Installation](#installation)
-* [Usage](#usage)
-    * [Deploy Cluster](#deploy-cluster) 
-    * [Mount FileSystem](#mount-filesystem)
-    * [Umount FileSystem](#umount-filesystem)
-* [Devops](#devops)
-
-Requirement
+CurveAdm
 ---
 
-CurveAdm depends on docker, please [install docker](https://docs.docker.com/engine/install/) first.
+CurveAdm is a tool for deploy and manage Curve cluster, it's easy to use and with rich features.
 
-Please make sure the docker daemon has running, you can run the below command to verify:
+Documentation
+---
 
-```shell
-$ sudo docker run hello-world
-```
-
-This command downloads a test image and runs it in a container. When the container runs, it prints a message and exits.
-
+* [简体中文][docs]
+ 
 Installation
 ---
 
 ```shell
-$ sh -c "$(curl -fsSL https://curveadm.nos-eastchina1.126.net/script/install.sh)"
+$ bash -c "$(curl -fsSL https://curveadm.nos-eastchina1.126.net/script/install.sh)"
 ```
 
 Usage
 ---
 
-### Deploy Cluster
+Run `curveadm -h` for more informations.
 
-Prepare cluster topology, you can refer to the sample configuration:
-
-* [cluster](examples/cluster/topology.yaml)
-* [stand-alone](examples/stand-alone/topology.yaml)
-
-```shell
-$ vi topology.yaml
-```
-
-Add cluster with specified topology:
-
-```shell
-$ curveadm cluster add c1 -f topology.yaml
-```
-
-Switch cluster:
-
-```shell
-$ curveadm cluster checkout c1
-```
-
-Deploy cluster:
-```shell
-$ curveadm deploy
-```
-
-### Mount FileSystem
-
-Prepare client config, you can refer to the sample configuration:
-
-* [cluster](examples/cluster/client.yaml)
-* [stand-alone](examples/stand-alone/client.yaml)
-
-```shell
-$ vi client.yaml
-```
-
-Mount filesystem:
-
-```shell
-$ sudo curveadm mount NAME-OF-CURVEFS MOUNTPONT -c client.yaml
-```
-
-### Umount FileSystem
-
-```shell
-$ sudo curveadm umount MOUNTPOINT
-```
-
-
-Devops
+Contributing
 ---
 
-Run `curveadm -h` for more information.
+Contributions of code, tests, documentation and bugs are welcome,
+you can see [CONTRIBUTING][contributing] for details.
+
+License
+---
+
+CurveAdm is under the Apache 2.0 license. See the [LICENSE](LICENSE) file for details.
+
+[docs]: https://github.com/opencurve/curveadm/wiki
+[contributing]: https://github.com/opencurve/curveadm/wiki/others#参与-curveadm-的开发

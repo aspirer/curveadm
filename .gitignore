@@ -1,4 +1,12 @@
 t/*
 .idea/
 sbin/
-configs/*
+bin/
+PIPE/
+curveadm/
+T/*
+logs/*
+.playground
+.build/
+.vscode/
+.CHANGELOG

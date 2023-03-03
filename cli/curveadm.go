@@ -25,6 +25,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/opencurve/curveadm/cli/cli"
 	"github.com/opencurve/curveadm/cli/command"
@@ -33,12 +34,21 @@ import (
 func Execute() {
 	curveadm, err := cli.NewCurveAdm()
 	if err != nil {
-		fmt.Printf("New curveadm failed: %s", err)
+		fmt.Println(err)
 		os.Exit(1)
 	}
 
+	yes, err := curveadm.Upgrade()
+	if err != nil {
+		os.Exit(1)
+	} else if yes {
+		os.Exit(0)
+	}
+
+	id := curveadm.PreAudit(time.Now(), os.Args[1:])
 	cmd := command.NewCurveAdmCommand(curveadm)
 	err = cmd.Execute()
+	curveadm.PostAudit(id, err)
 	if err != nil {
 		os.Exit(1)
 	}

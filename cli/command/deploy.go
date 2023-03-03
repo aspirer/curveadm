@@ -24,66 +24,257 @@ package command
 
 import (
 	"fmt"
-
-	cliutil "github.com/opencurve/curveadm/internal/utils"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/opencurve/curveadm/cli/cli"
-	"github.com/opencurve/curveadm/internal/configure"
-	"github.com/opencurve/curveadm/internal/tasks"
+	comm "github.com/opencurve/curveadm/internal/common"
+	"github.com/opencurve/curveadm/internal/configure/topology"
+	"github.com/opencurve/curveadm/internal/errno"
+	"github.com/opencurve/curveadm/internal/playbook"
+	cliutil "github.com/opencurve/curveadm/internal/utils"
+	utils "github.com/opencurve/curveadm/internal/utils"
 	"github.com/spf13/cobra"
 )
 
 const (
-	PULL_IMAGE int = iota
-	CREATE_CONTAINER
-	SYNC_CONFIG
-	START_ETCD
-	START_MDS
-	START_METASEREVR
-	CREATE_TOPOLOGY
+	CLEAN_PRECHECK_ENVIRONMENT = playbook.CLEAN_PRECHECK_ENVIRONMENT
+	PULL_IMAGE                 = playbook.PULL_IMAGE
+	CREATE_CONTAINER           = playbook.CREATE_CONTAINER
+	SYNC_CONFIG                = playbook.SYNC_CONFIG
+	START_ETCD                 = playbook.START_ETCD
+	START_MDS                  = playbook.START_MDS
+	CREATE_PHYSICAL_POOL       = playbook.CREATE_PHYSICAL_POOL
+	START_CHUNKSERVER          = playbook.START_CHUNKSERVER
+	CREATE_LOGICAL_POOL        = playbook.CREATE_LOGICAL_POOL
+	START_SNAPSHOTCLONE        = playbook.START_SNAPSHOTCLONE
+	START_METASERVER           = playbook.START_METASERVER
+	BALANCE_LEADER             = playbook.BALANCE_LEADER
+
+	ROLE_ETCD          = topology.ROLE_ETCD
+	ROLE_MDS           = topology.ROLE_MDS
+	ROLE_CHUNKSERVER   = topology.ROLE_CHUNKSERVER
+	ROLE_SNAPSHOTCLONE = topology.ROLE_SNAPSHOTCLONE
+	ROLE_METASERVER    = topology.ROLE_METASERVER
 )
 
-type deployOptions struct{}
+var (
+	CURVEBS_DEPLOY_STEPS = []int{
+		CLEAN_PRECHECK_ENVIRONMENT,
+		PULL_IMAGE,
+		CREATE_CONTAINER,
+		SYNC_CONFIG,
+		START_ETCD,
+		START_MDS,
+		CREATE_PHYSICAL_POOL,
+		START_CHUNKSERVER,
+		CREATE_LOGICAL_POOL,
+		START_SNAPSHOTCLONE,
+		BALANCE_LEADER,
+	}
+
+	CURVEFS_DEPLOY_STEPS = []int{
+		CLEAN_PRECHECK_ENVIRONMENT,
+		PULL_IMAGE,
+		CREATE_CONTAINER,
+		SYNC_CONFIG,
+		START_ETCD,
+		START_MDS,
+		CREATE_LOGICAL_POOL,
+		START_METASERVER,
+	}
+
+	DEPLOY_FILTER_ROLE = map[int]string{
+		START_ETCD:           ROLE_ETCD,
+		START_MDS:            ROLE_MDS,
+		START_CHUNKSERVER:    ROLE_CHUNKSERVER,
+		START_SNAPSHOTCLONE:  ROLE_SNAPSHOTCLONE,
+		START_METASERVER:     ROLE_METASERVER,
+		CREATE_PHYSICAL_POOL: ROLE_MDS,
+		CREATE_LOGICAL_POOL:  ROLE_MDS,
+		BALANCE_LEADER:       ROLE_MDS,
+	}
+
+	DEPLOY_LIMIT_SERVICE = map[int]int{
+		CREATE_PHYSICAL_POOL: 1,
+		CREATE_LOGICAL_POOL:  1,
+		BALANCE_LEADER:       1,
+	}
+
+	CAN_SKIP_ROLES = []string{
+		ROLE_SNAPSHOTCLONE,
+	}
+)
+
+type deployOptions struct {
+	skip     []string
+	insecure bool
+}
+
+func checkDeployOptions(options deployOptions) error {
+	supported := utils.Slice2Map(CAN_SKIP_ROLES)
+	for _, role := range options.skip {
+		if !supported[role] {
+			return errno.ERR_UNSUPPORT_SKIPPED_SERVICE_ROLE.
+				F("skip role: %s", role)
+		}
+	}
+	return nil
+}
 
 func NewDeployCommand(curveadm *cli.CurveAdm) *cobra.Command {
 	var options deployOptions
 
 	cmd := &cobra.Command{
-		Use:   "deploy",
+		Use:   "deploy [OPTIONS]",
 		Short: "Deploy cluster",
 		Args:  cliutil.NoArgs,
+		PreRunE: func(cmd *cobra.Command, args []string) error {
+			return checkDeployOptions(options)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDeploy(curveadm, options)
 		},
 		DisableFlagsInUseLine: true,
 	}
 
+	flags := cmd.Flags()
+	flags.StringSliceVar(&options.skip, "skip", []string{}, "Specify skipped service roles")
+	flags.BoolVarP(&options.insecure, "insecure", "k", false, "Deploy without precheck")
+
 	return cmd
 }
 
-func filterDeployConfig(dcs []*configure.DeployConfig, role string) []*configure.DeployConfig {
-	options := configure.FilterOption{Id: "*", Role: role, Host: "*"}
-	return configure.FilterDeployConfig(dcs, options)
+func skipServiceRole(deployConfigs []*topology.DeployConfig, options deployOptions) []*topology.DeployConfig {
+	skipped := utils.Slice2Map(options.skip)
+	dcs := []*topology.DeployConfig{}
+	for _, dc := range deployConfigs {
+		if skipped[dc.GetRole()] {
+			continue
+		}
+		dcs = append(dcs, dc)
+	}
+	return dcs
 }
 
-func displayTitle(curveadm *cli.CurveAdm, dcs []*configure.DeployConfig) {
-	netcd := 0
-	nmds := 0
-	nmetaserver := 0
-	for _, dc := range dcs {
-		if dc.GetRole() == configure.ROLE_ETCD {
-			netcd += 1
-		} else if dc.GetRole() == configure.ROLE_MDS {
-			nmds += 1
-		} else if dc.GetRole() == configure.ROLE_METASERVER {
-			nmetaserver += 1
+func skipDeploySteps(deploySteps []int, options deployOptions) []int {
+	steps := []int{}
+	skipped := utils.Slice2Map(options.skip)
+	for _, step := range deploySteps {
+		if step == START_SNAPSHOTCLONE && skipped[ROLE_SNAPSHOTCLONE] {
+			continue
 		}
+		steps = append(steps, step)
+	}
+	return steps
+}
+
+func precheckBeforeDeploy(curveadm *cli.CurveAdm,
+	dcs []*topology.DeployConfig,
+	options deployOptions) error {
+	// 1) skip precheck
+	if options.insecure {
+		return nil
 	}
 
-	curveadm.WriteOut("Cluster Name    : %s\n", curveadm.ClusterName())
-	curveadm.WriteOut("Cluster Services: etcd*%d, mds*%d, metaserver*%d\n", netcd, nmds, nmetaserver)
-	curveadm.WriteOut("\n")
+	// 2) generate precheck playbook
+	pb, err := genPrecheckPlaybook(curveadm, dcs, precheckOptions{
+		skipSnapshotClone: utils.Slice2Map(options.skip)[ROLE_SNAPSHOTCLONE],
+	})
+	if err != nil {
+		return err
+	}
+
+	// 3) run playbook
+	err = pb.Run()
+	if err != nil {
+		return err
+	}
+
+	// 4) printf success prompt
+	curveadm.WriteOutln("")
+	curveadm.WriteOutln(color.GreenString("Congratulations!!! all precheck passed :)"))
+	curveadm.WriteOut(color.GreenString("Now we start to deploy cluster, sleep 3 seconds..."))
+	time.Sleep(time.Duration(3) * time.Second)
+	curveadm.WriteOutln("\n")
+	return nil
+}
+
+func genDeployPlaybook(curveadm *cli.CurveAdm,
+	dcs []*topology.DeployConfig,
+	options deployOptions) (*playbook.Playbook, error) {
+	kind := dcs[0].GetKind()
+	steps := CURVEFS_DEPLOY_STEPS
+	if kind == topology.KIND_CURVEBS {
+		steps = CURVEBS_DEPLOY_STEPS
+	}
+	steps = skipDeploySteps(steps, options)
+
+	pb := playbook.NewPlaybook(curveadm)
+	for _, step := range steps {
+		// configs
+		config := dcs
+		if len(DEPLOY_FILTER_ROLE[step]) > 0 {
+			role := DEPLOY_FILTER_ROLE[step]
+			config = curveadm.FilterDeployConfigByRole(config, role)
+		}
+		n := len(config)
+		if DEPLOY_LIMIT_SERVICE[step] > 0 {
+			n = DEPLOY_LIMIT_SERVICE[step]
+			config = config[:n]
+		}
+
+		// options
+		options := map[string]interface{}{}
+		if step == CREATE_PHYSICAL_POOL {
+			options[comm.KEY_CREATE_POOL_TYPE] = comm.POOL_TYPE_PHYSICAL
+		} else if step == CREATE_LOGICAL_POOL {
+			options[comm.KEY_CREATE_POOL_TYPE] = comm.POOL_TYPE_LOGICAL
+		}
+
+		pb.AddStep(&playbook.PlaybookStep{
+			Type:    step,
+			Configs: config,
+			Options: options,
+		})
+	}
+	return pb, nil
+}
+
+func statistics(dcs []*topology.DeployConfig) map[string]int {
+	count := map[string]int{}
+	for _, dc := range dcs {
+		count[dc.GetRole()]++
+	}
+	return count
+}
+
+func serviceStats(dcs []*topology.DeployConfig) string {
+	count := statistics(dcs)
+	netcd := count[topology.ROLE_ETCD]
+	nmds := count[topology.ROLE_MDS]
+	nchunkserevr := count[topology.ROLE_METASERVER]
+	nsnapshotclone := count[topology.ROLE_SNAPSHOTCLONE]
+	nmetaserver := count[topology.ROLE_METASERVER]
+
+	var serviceStats string
+	kind := dcs[0].GetKind()
+	if kind == topology.KIND_CURVEBS { // KIND_CURVEBS
+		serviceStats = fmt.Sprintf("etcd*%d, mds*%d, chunkserver*%d, snapshotclone*%d",
+			netcd, nmds, nchunkserevr, nsnapshotclone)
+	} else { // KIND_CURVEFS
+		serviceStats = fmt.Sprintf("etcd*%d, mds*%d, metaserver*%d",
+			netcd, nmds, nmetaserver)
+	}
+
+	return serviceStats
+}
+
+func displayDeployTitle(curveadm *cli.CurveAdm, dcs []*topology.DeployConfig) {
+	curveadm.WriteOutln("Cluster Name    : %s", curveadm.ClusterName())
+	curveadm.WriteOutln("Cluster Kind    : %s", dcs[0].GetKind())
+	curveadm.WriteOutln("Cluster Services: %s", serviceStats(dcs))
+	curveadm.WriteOutln("")
 }
 
 /*
@@ -94,62 +285,44 @@ func displayTitle(curveadm *cli.CurveAdm, dcs []*configure.DeployConfig) {
  *   4) start container
  *     4.1) start etcd container
  *     4.2) start mds container
- *     4.3) create topology
- *     4.4) start metaserver
+ *     4.3) create physical pool(curvebs)
+ *     4.3) start chunkserver(curvebs) / metaserver(curvefs) container
+ *     4.4) start snapshotserver(curvebs) container
+ *   5) create logical pool
+ *   6) balance leader rapidly
  */
 func runDeploy(curveadm *cli.CurveAdm, options deployOptions) error {
-	deployConfigs, err := configure.ParseTopology(curveadm.ClusterTopologyData())
+	// 1) parse cluster topology
+	dcs, err := curveadm.ParseTopology()
 	if err != nil {
 		return err
 	}
 
-	// display title
-	displayTitle(curveadm, deployConfigs)
+	// 2) skip service role
+	dcs = skipServiceRole(dcs, options)
 
-	// exec task one by one
-	taskSeq := []int{
-		PULL_IMAGE,
-		CREATE_CONTAINER,
-		SYNC_CONFIG,
-		START_ETCD,
-		START_MDS,
-		CREATE_TOPOLOGY,
-		START_METASEREVR,
-	}
-	for _, v := range taskSeq {
-		taskType := tasks.UNKNOWN
-		dcs := deployConfigs
-		switch v {
-		case PULL_IMAGE:
-			taskType = tasks.PULL_IMAGE
-		case CREATE_CONTAINER:
-			taskType = tasks.CREATE_CONTAINER
-		case SYNC_CONFIG:
-			taskType = tasks.SYNC_CONFIG
-		case START_ETCD:
-			taskType = tasks.START_SERVICE
-			dcs = filterDeployConfig(dcs, configure.ROLE_ETCD)
-		case START_MDS:
-			taskType = tasks.START_SERVICE
-			dcs = filterDeployConfig(dcs, configure.ROLE_MDS)
-		case CREATE_TOPOLOGY:
-			taskType = tasks.CREATE_TOPOLOGY
-			dcs = filterDeployConfig(dcs, configure.ROLE_MDS)[:1]
-		case START_METASEREVR:
-			taskType = tasks.START_SERVICE
-			dcs = filterDeployConfig(dcs, configure.ROLE_METASERVER)
-		}
-
-		if len(dcs) == 0 {
-			return fmt.Errorf("there is no service specified in topology, " +
-				"please use 'curveadm config commit' to update topology")
-		} else if err := tasks.ExecParallelTasks(taskType, curveadm, dcs); err != nil {
-			return curveadm.NewPromptError(err, "")
-		} else {
-			curveadm.WriteOut("\n")
-		}
+	// 3) precheck before deploy
+	err = precheckBeforeDeploy(curveadm, dcs, options)
+	if err != nil {
+		return err
 	}
 
-	curveadm.WriteOut(color.GreenString("Cluster '%s' successfully deployed :)\n"), curveadm.ClusterName())
+	// 4) generate deploy playbook
+	pb, err := genDeployPlaybook(curveadm, dcs, options)
+	if err != nil {
+		return err
+	}
+
+	// 5) display title
+	displayDeployTitle(curveadm, dcs)
+
+	// 6) run playground
+	if err = pb.Run(); err != nil {
+		return err
+	}
+
+	// 7) print success prompt
+	curveadm.WriteOutln("")
+	curveadm.WriteOutln(color.GreenString("Cluster '%s' successfully deployed ^_^."), curveadm.ClusterName())
 	return nil
 }

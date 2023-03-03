@@ -20,6 +20,8 @@
  * Author: Jingli Chen (Wine93)
  */
 
+// __SIGN_BY_WINE93__
+
 package cluster
 
 import (
@@ -41,6 +43,9 @@ func NewClusterCommand(curveadm *cli.CurveAdm) *cobra.Command {
 		NewCheckoutCommand(curveadm),
 		NewListCommand(curveadm),
 		NewRemoveCommand(curveadm),
+		// TODO(P1): enable export and import
+		//NewExportCommand(curveadm),
+		//NewImportCommand(curveadm),
 	)
 	return cmd
 }

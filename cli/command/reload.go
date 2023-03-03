@@ -20,17 +20,26 @@
  * Author: Jingli Chen (Wine93)
  */
 
+// __SIGN_BY_WINE93__
+
 package command
 
 import (
-	"fmt"
-
 	"github.com/fatih/color"
 	"github.com/opencurve/curveadm/cli/cli"
-	"github.com/opencurve/curveadm/internal/configure"
-	"github.com/opencurve/curveadm/internal/tasks"
+	"github.com/opencurve/curveadm/internal/configure/topology"
+	"github.com/opencurve/curveadm/internal/errno"
+	"github.com/opencurve/curveadm/internal/playbook"
+	tui "github.com/opencurve/curveadm/internal/tui/common"
 	cliutil "github.com/opencurve/curveadm/internal/utils"
 	"github.com/spf13/cobra"
+)
+
+var (
+	RELOAD_PLAYBOOK_STEPS = []int{
+		playbook.SYNC_CONFIG,
+		playbook.RESTART_SERVICE,
+	}
 )
 
 type reloadOptions struct {
@@ -43,9 +52,12 @@ func NewReloadCommand(curveadm *cli.CurveAdm) *cobra.Command {
 	var options reloadOptions
 
 	cmd := &cobra.Command{
-		Use:   "reload",
+		Use:   "reload [OPTIONS]",
 		Short: "Reload service",
 		Args:  cliutil.NoArgs,
+		PreRunE: func(cmd *cobra.Command, args []string) error {
+			return checkCommonOptions(curveadm, options.id, options.role, options.host)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReload(curveadm, options)
 		},
@@ -53,33 +65,63 @@ func NewReloadCommand(curveadm *cli.CurveAdm) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.StringVarP(&options.id, "id", "", "*", "Specify service id")
-	flags.StringVarP(&options.role, "role", "", "*", "Specify service role")
-	flags.StringVarP(&options.host, "host", "", "*", "Specify service host")
+	flags.StringVar(&options.id, "id", "*", "Specify service id")
+	flags.StringVar(&options.role, "role", "*", "Specify service role")
+	flags.StringVar(&options.host, "host", "*", "Specify service host")
 
 	return cmd
 }
 
-func runReload(curveadm *cli.CurveAdm, options reloadOptions) error {
-	dcs, err := configure.ParseTopology(curveadm.ClusterTopologyData())
-	if err != nil {
-		return err
-	}
-
-	dcs = configure.FilterDeployConfig(dcs, configure.FilterOption{
+func genReloadPlaybook(curveadm *cli.CurveAdm,
+	dcs []*topology.DeployConfig,
+	options reloadOptions) (*playbook.Playbook, error) {
+	dcs = curveadm.FilterDeployConfig(dcs, topology.FilterOption{
 		Id:   options.id,
 		Role: options.role,
 		Host: options.host,
 	})
-
 	if len(dcs) == 0 {
-		return fmt.Errorf("service not found")
-	} else if err := tasks.ExecParallelTasks(tasks.SYNC_CONFIG, curveadm, dcs); err != nil {
-		return curveadm.NewPromptError(err, "")
-	} else if err := tasks.ExecParallelTasks(tasks.RESTART_SERVICE, curveadm, dcs); err != nil {
-		return curveadm.NewPromptError(err, "")
+		return nil, errno.ERR_NO_SERVICES_MATCHED
 	}
 
-	curveadm.WriteOut(color.GreenString("Reload success\n"))
+	steps := RELOAD_PLAYBOOK_STEPS
+	pb := playbook.NewPlaybook(curveadm)
+	for _, step := range steps {
+		pb.AddStep(&playbook.PlaybookStep{
+			Type:    step,
+			Configs: dcs,
+		})
+	}
+	return pb, nil
+}
+
+func runReload(curveadm *cli.CurveAdm, options reloadOptions) error {
+	// 1) parse cluster topology
+	dcs, err := curveadm.ParseTopology()
+	if err != nil {
+		return err
+	}
+
+	// 2) generate restart playbook
+	pb, err := genReloadPlaybook(curveadm, dcs, options)
+	if err != nil {
+		return err
+	}
+
+	// 3) confirm by user
+	if pass := tui.ConfirmYes(tui.PromptReloadService(options.id, options.role, options.host)); !pass {
+		curveadm.WriteOut(tui.PromptCancelOpetation("reload service"))
+		return errno.ERR_CANCEL_OPERATION
+	}
+
+	// 4) run playground
+	err = pb.Run()
+	if err != nil {
+		return err
+	}
+
+	// 5) print success prompt
+	curveadm.WriteOutln("")
+	curveadm.WriteOutln(color.GreenString("Reload success :)"))
 	return nil
 }

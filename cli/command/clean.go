@@ -20,35 +20,58 @@
  * Author: Jingli Chen (Wine93)
  */
 
+// __SIGN_BY_WINE93__
+
 package command
 
 import (
-	"fmt"
-	"strings"
-
-	cliutil "github.com/opencurve/curveadm/internal/utils"
-
 	"github.com/opencurve/curveadm/cli/cli"
-	"github.com/opencurve/curveadm/internal/configure"
-	"github.com/opencurve/curveadm/internal/tasks"
+	comm "github.com/opencurve/curveadm/internal/common"
+	"github.com/opencurve/curveadm/internal/configure/topology"
+	"github.com/opencurve/curveadm/internal/errno"
+	"github.com/opencurve/curveadm/internal/playbook"
 	tui "github.com/opencurve/curveadm/internal/tui/common"
+	cliutil "github.com/opencurve/curveadm/internal/utils"
+	utils "github.com/opencurve/curveadm/internal/utils"
 	"github.com/spf13/cobra"
 )
 
-var (
-	cleanExample = `Examples:
+const (
+	CLEAN_EXAMPLE = `Examples:
   $ curveadm clean                               # Clean everything for all services
   $ curveadm clean --only='log,data'             # Clean log and data for all services
   $ curveadm clean --role=etcd --only=container  # Clean container for etcd services`
+)
 
-	supportOnlyFlag = map[string]bool{"log": true, "data": true, "container": true}
+var (
+	CLEAN_PLAYBOOK_STEPS = []int{
+		playbook.CLEAN_SERVICE,
+	}
+
+	CLEAN_ITEMS = []string{
+		comm.CLEAN_ITEM_LOG,
+		comm.CLEAN_ITEM_DATA,
+		comm.CLEAN_ITEM_CONTAINER,
+	}
 )
 
 type cleanOptions struct {
-	id   string
-	role string
-	host string
-	only []string
+	id             string
+	role           string
+	host           string
+	only           []string
+	withoutRecycle bool
+}
+
+func checkCleanOptions(curveadm *cli.CurveAdm, options cleanOptions) error {
+	supported := utils.Slice2Map(CLEAN_ITEMS)
+	for _, item := range options.only {
+		if !supported[item] {
+			return errno.ERR_UNSUPPORT_CLEAN_ITEM.
+				F("clean item: %s", item)
+		}
+	}
+	return checkCommonOptions(curveadm, options.id, options.role, options.host)
 }
 
 func NewCleanCommand(curveadm *cli.CurveAdm) *cobra.Command {
@@ -58,14 +81,9 @@ func NewCleanCommand(curveadm *cli.CurveAdm) *cobra.Command {
 		Use:     "clean [OPTIONS]",
 		Short:   "Clean service's environment",
 		Args:    cliutil.NoArgs,
-		Example: cleanExample,
+		Example: CLEAN_EXAMPLE,
 		PreRunE: func(cmd *cobra.Command, args []string) error {
-			for _, v := range options.only {
-				if !supportOnlyFlag[v] {
-					return fmt.Errorf("unknown flag '%s' in only option", v)
-				}
-			}
-			return nil
+			return checkCleanOptions(curveadm, options)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runClean(curveadm, options)
@@ -74,46 +92,61 @@ func NewCleanCommand(curveadm *cli.CurveAdm) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.StringVarP(&options.id, "id", "", "*", "Specify service id")
-	flags.StringVarP(&options.role, "role", "", "*", "Specify service role")
-	flags.StringVarP(&options.host, "host", "", "*", "Specify service host")
-	flags.StringSliceVarP(&options.only, "only", "o", []string{"log", "data", "container"}, "Specify clean item")
+	flags.StringVar(&options.id, "id", "*", "Specify service id")
+	flags.StringVar(&options.role, "role", "*", "Specify service role")
+	flags.StringVar(&options.host, "host", "*", "Specify service host")
+	flags.StringSliceVarP(&options.only, "only", "o", CLEAN_ITEMS, "Specify clean item")
+	flags.BoolVar(&options.withoutRecycle, "no-recycle", false, "Remove data directory directly instead of recycle chunks")
 
 	return cmd
 }
 
+func genCleanPlaybook(curveadm *cli.CurveAdm,
+	dcs []*topology.DeployConfig,
+	options cleanOptions) (*playbook.Playbook, error) {
+	dcs = curveadm.FilterDeployConfig(dcs, topology.FilterOption{
+		Id:   options.id,
+		Role: options.role,
+		Host: options.host,
+	})
+	if len(dcs) == 0 {
+		return nil, errno.ERR_NO_SERVICES_MATCHED
+	}
+
+	steps := CLEAN_PLAYBOOK_STEPS
+	pb := playbook.NewPlaybook(curveadm)
+	for _, step := range steps {
+		pb.AddStep(&playbook.PlaybookStep{
+			Type:    step,
+			Configs: dcs,
+			Options: map[string]interface{}{
+				comm.KEY_CLEAN_ITEMS:      options.only,
+				comm.KEY_CLEAN_BY_RECYCLE: options.withoutRecycle == false,
+			},
+		})
+	}
+	return pb, nil
+}
+
 func runClean(curveadm *cli.CurveAdm, options cleanOptions) error {
-	dcs, err := configure.ParseTopology(curveadm.ClusterTopologyData())
+	// 1) parse cluster topology
+	dcs, err := curveadm.ParseTopology()
 	if err != nil {
 		return err
 	}
 
-	id := options.id
-	role := options.role
-	host := options.host
-	only := options.only
-	dcs = configure.FilterDeployConfig(dcs, configure.FilterOption{
-		Id:   id,
-		Role: role,
-		Host: host,
-	})
-
-	if len(dcs) == 0 {
-		curveadm.WriteOut("Clean nothing\n")
-		return nil
+	// 2) generate clean playbook
+	pb, err := genCleanPlaybook(curveadm, dcs, options)
+	if err != nil {
+		return err
 	}
 
-	// clean service
-	curveadm.WriteOut("clean: role=%s host=%s id=%s only=%s\n", role, host, id, strings.Join(only, ","))
-	if pass := tui.ConfirmYes("Do you want to continue? [y/N]: "); !pass {
-		curveadm.WriteOut("Clean nothing\n")
-	} else {
-		curveadm.WriteOut("\n")
-		memStorage := curveadm.MemStorage()
-		memStorage.Set(tasks.KEY_CLEAN_ITEMS, only)
-		if err := tasks.ExecParallelTasks(tasks.CLEAN_SERVICE, curveadm, dcs); err != nil {
-			return curveadm.NewPromptError(err, "")
-		}
+	// 3) confirm by user
+	if pass := tui.ConfirmYes(tui.PromptCleanService(options.role, options.host, options.only)); !pass {
+		curveadm.WriteOut(tui.PromptCancelOpetation("clean service"))
+		return errno.ERR_CANCEL_OPERATION
 	}
-	return nil
+
+	// 4) run playground
+	return pb.Run()
 }
